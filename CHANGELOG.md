@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Built-in plugin: `playwright` — browser automation via `@playwright/mcp`. MCP server runs `npx -y @playwright/mcp@latest` when enabled.
 - `orbit doctor` and `orbit setup` now include a plugins section.
 
+### Fixed
+
+- Gemini auth detection: `auth_config_dirs` corrected from `.config/gemini` to `.gemini` (the actual location of `oauth_creds.json` used by `@google/gemini-cli`). `orbit auth` and `orbit doctor` now correctly detect gemini as configured when `~/.gemini/` exists.
+
 ### Changed
 
 - `orbit doctor` engines section driven by the catalog instead of hardcoded engine list.

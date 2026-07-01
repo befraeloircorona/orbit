@@ -16,7 +16,7 @@ description = "Google Gemini CLI — agentic AI with Google's models"
 auth_hint = "Run `gemini auth` or set GOOGLE_API_KEY / GEMINI_API_KEY"
 auth_cmd = "gemini auth"
 auth_env_vars = ["GOOGLE_API_KEY", "GEMINI_API_KEY"]
-auth_config_dirs = [".config/gemini"]
+auth_config_dirs = [".gemini"]
 
 [[engines]]
 name = "claude"
