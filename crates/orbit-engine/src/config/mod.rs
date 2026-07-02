@@ -2,7 +2,7 @@ pub mod jsonc;
 pub mod mcp;
 
 use anyhow::Result;
-use orbit_core::{context::OrbitScope, engine::Engine};
+use orbit_core::{context::OrbitScope, engine::Engine, user_config::UserConfig};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -25,8 +25,9 @@ pub struct MergedConfig {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-// ── MCP names that must never leak across workspaces ─────────────────────────
-const LEAKED_MCP: &[&str] = &["jira_betterware", "jira_jaframexico", "jira_jafraace"];
+// MCP names to strip from merged configs are user-configured
+// (`[mcp] filtered_names` in ~/.config/orbit/config.toml) — see
+// `orbit_core::user_config::McpSection`. Previously a hardcoded list.
 
 // ── scope inspection (dry-run) ────────────────────────────────────────────────
 
@@ -87,9 +88,7 @@ fn build_scope_report(scope: &OrbitScope, engine: Engine, merged: &MergedConfig)
                         .iter()
                         .map(|c| dir.join(c))
                         .find(|p| p.is_file());
-                    let path = found
-                        .clone()
-                        .unwrap_or_else(|| dir.join("opencode.json"));
+                    let path = found.clone().unwrap_or_else(|| dir.join("opencode.json"));
                     (path, found.is_some())
                 };
 
@@ -137,7 +136,12 @@ fn build_scope_report(scope: &OrbitScope, engine: Engine, merged: &MergedConfig)
                 .join(&scope.tenant)
                 .join("projects")
                 .join(&scope.project);
-            push_config_dual(&mut config_layers, &global_project, &local_project, "project");
+            push_config_dual(
+                &mut config_layers,
+                &global_project,
+                &local_project,
+                "project",
+            );
 
             if !scope.repository.is_empty() {
                 let global_repo = global_project.join("repositories").join(&scope.repository);
@@ -167,26 +171,23 @@ fn build_scope_report(scope: &OrbitScope, engine: Engine, merged: &MergedConfig)
         label: "catalog".into(),
     });
 
-    let push_dual = |layers: &mut Vec<LayerEntry>,
-                     shared: &Path,
-                     local: &Path,
-                     rel: &str,
-                     label: &str| {
-        let sp = shared.join(rel);
-        let lp = local.join(rel);
-        layers.push(LayerEntry {
-            exists: sp.is_file(),
-            path: shorten_path(&home, &sp),
-            label: format!("{label} (shared)"),
-        });
-        if lp.canonicalize().ok() != sp.canonicalize().ok() {
+    let push_dual =
+        |layers: &mut Vec<LayerEntry>, shared: &Path, local: &Path, rel: &str, label: &str| {
+            let sp = shared.join(rel);
+            let lp = local.join(rel);
             layers.push(LayerEntry {
-                exists: lp.is_file(),
-                path: shorten_path(&home, &lp),
-                label: format!("{label} (local)"),
+                exists: sp.is_file(),
+                path: shorten_path(&home, &sp),
+                label: format!("{label} (shared)"),
             });
-        }
-    };
+            if lp.canonicalize().ok() != sp.canonicalize().ok() {
+                layers.push(LayerEntry {
+                    exists: lp.is_file(),
+                    path: shorten_path(&home, &lp),
+                    label: format!("{label} (local)"),
+                });
+            }
+        };
 
     let shared = scope.global_ai_root.as_path();
     let local = scope.ai_context_root.as_path();
@@ -306,7 +307,7 @@ pub fn load(scope: &OrbitScope, engine: Engine) -> Result<MergedConfig> {
     let global_opencode = dirs_global_config().join("opencode/opencode.jsonc");
     if global_opencode.is_file() {
         let mut val = jsonc::load_file(&global_opencode);
-        filter_leaked_mcp(&mut val);
+        filter_mcp_names(&mut val, &UserConfig::load().mcp.filtered_names);
         merge_value_into(&mut cfg, val, &global_opencode, engine);
     }
 
@@ -528,10 +529,13 @@ fn config_candidates(engine: Engine) -> &'static [&'static str] {
     }
 }
 
-fn filter_leaked_mcp(val: &mut serde_json::Value) {
+fn filter_mcp_names(val: &mut serde_json::Value, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
     if let Some(mcp) = val.get_mut("mcp").and_then(|v| v.as_object_mut()) {
-        for key in LEAKED_MCP {
-            mcp.remove(*key);
+        for key in names {
+            mcp.remove(key.as_str());
         }
     }
 }
@@ -655,16 +659,23 @@ mod tests {
     }
 
     #[test]
-    fn filters_leaked_mcp_from_global_config() {
+    fn filters_configured_mcp_names_from_global_config() {
         let mut val = serde_json::json!({
             "mcp": {
-                "jira_betterware": { "command": "x" },
+                "leaked_server": { "command": "x" },
                 "my_server": { "command": "y" }
             }
         });
-        filter_leaked_mcp(&mut val);
+        filter_mcp_names(&mut val, &["leaked_server".to_string()]);
         let mcp = val["mcp"].as_object().unwrap();
-        assert!(!mcp.contains_key("jira_betterware"));
+        assert!(!mcp.contains_key("leaked_server"));
         assert!(mcp.contains_key("my_server"));
+    }
+
+    #[test]
+    fn empty_mcp_filter_list_is_a_noop() {
+        let mut val = serde_json::json!({ "mcp": { "my_server": { "command": "y" } } });
+        filter_mcp_names(&mut val, &[]);
+        assert!(val["mcp"].as_object().unwrap().contains_key("my_server"));
     }
 }

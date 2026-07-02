@@ -16,6 +16,20 @@ pub struct UserConfig {
     pub engine: EngineSection,
     pub install: InstallSection,
     pub update: UserUpdateSection,
+    pub mcp: McpSection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct McpSection {
+    /// MCP server names to strip from merged configs before launching a
+    /// session (e.g. entries that leaked into a shared/global config and must
+    /// not propagate). Empty by default — set per machine in
+    /// `~/.config/orbit/config.toml`:
+    ///
+    ///   [mcp]
+    ///   filtered_names = ["some_leaked_server"]
+    pub filtered_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +72,11 @@ impl Default for UserUpdateSection {
     fn default() -> Self {
         Self {
             auto_update_governance: true,
-            auto_update_binary: true,
+            // Off by default: silently swapping the running binary from a
+            // remote release feed is a supply-chain decision each machine
+            // (or org) must opt into explicitly. Enable with
+            // `orbit config set update.auto_update_binary true`.
+            auto_update_binary: false,
         }
     }
 }
@@ -71,6 +89,7 @@ impl Default for UserConfig {
             engine: EngineSection::default(),
             install: InstallSection::default(),
             update: UserUpdateSection::default(),
+            mcp: McpSection::default(),
         }
     }
 }
