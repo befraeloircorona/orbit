@@ -190,9 +190,24 @@ fn build_claude(scope: &OrbitScope, runtime_dir: &Path, instructions: &[PathBuf]
     }
 
     // ── work_dir/.claude → runtime/.claude ───────────────────────────────────
+    // SAFETY: only ever replace a `.claude` that orbit itself manages (a
+    // symlink, or nothing). A real `.claude/` directory belongs to the
+    // repository — e.g. governance-managed context (rules/, business/,
+    // plans/, settings.json) — and deleting it would destroy content orbit
+    // cannot recreate. In that case leave it untouched and skip the symlink:
+    // the engine still receives MCP servers via --mcp-config, and the repo's
+    // own `.claude/` context governs the session.
     let work_claude = scope.work_dir.join(".claude");
-    remove_any(&work_claude)?;
-    symlink(&runtime_claude, &work_claude)?;
+    if work_claude.is_symlink() || !work_claude.exists() {
+        remove_any(&work_claude)?;
+        symlink(&runtime_claude, &work_claude)?;
+    } else {
+        tracing::warn!(
+            "{} already exists and is not orbit-managed — leaving it untouched \
+             (orbit agent/context materialisation skipped for this repository)",
+            work_claude.display()
+        );
+    }
 
     Ok(())
 }
@@ -614,5 +629,100 @@ mod tests {
         // work_dir/.claude should be a symlink to runtime/.claude
         let symlink_path = work_dir.join(".claude");
         assert!(symlink_path.is_symlink(), ".claude should be a symlink");
+    }
+
+    #[test]
+    fn build_claude_preserves_existing_real_claude_dir() {
+        use orbit_core::context::OrbitScope;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let shared = tmp.path().join("AI/source-of-truth/opencode");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(
+            shared.join("manifest.jsonc"),
+            r#"{ "agents": {}, "commands": {} }"#,
+        )
+        .unwrap();
+
+        let runtime_dir = tmp.path().join("runtime");
+        fs::create_dir_all(&runtime_dir).unwrap();
+
+        // work_dir already has a REAL .claude/ with repo-owned content
+        // (e.g. governance-managed rules/business/plans)
+        let work_dir = tmp.path().join("work");
+        let existing = work_dir.join(".claude/rules");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("_global.md"), "# repo-owned rule").unwrap();
+
+        let scope = OrbitScope {
+            global_ai_root: tmp.path().join("AI"),
+            ai_context_root: tmp.path().join("AI"),
+            work_dir: work_dir.clone(),
+            global_mode: true,
+            ..Default::default()
+        };
+
+        build_claude(&scope, &runtime_dir, &[]).unwrap();
+
+        // The real directory must survive, unreplaced and intact
+        let work_claude = work_dir.join(".claude");
+        assert!(
+            !work_claude.is_symlink(),
+            ".claude must NOT be replaced by a symlink"
+        );
+        assert!(work_claude.is_dir(), ".claude must remain a real directory");
+        let content = fs::read_to_string(work_claude.join("rules/_global.md")).unwrap();
+        assert_eq!(content, "# repo-owned rule");
+
+        // Runtime materialisation still happens (harmless, engine-side)
+        assert!(runtime_dir.join(".claude/CLAUDE.md").exists());
+    }
+
+    #[test]
+    fn build_claude_replaces_its_own_stale_symlink() {
+        use orbit_core::context::OrbitScope;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let shared = tmp.path().join("AI/source-of-truth/opencode");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(
+            shared.join("manifest.jsonc"),
+            r#"{ "agents": {}, "commands": {} }"#,
+        )
+        .unwrap();
+
+        let runtime_dir = tmp.path().join("runtime");
+        fs::create_dir_all(&runtime_dir).unwrap();
+
+        // work_dir/.claude is an orbit-managed symlink (possibly dangling)
+        let work_dir = tmp.path().join("work");
+        fs::create_dir_all(&work_dir).unwrap();
+        symlink(
+            tmp.path().join("old-runtime/.claude"),
+            work_dir.join(".claude"),
+        )
+        .unwrap();
+
+        let scope = OrbitScope {
+            global_ai_root: tmp.path().join("AI"),
+            ai_context_root: tmp.path().join("AI"),
+            work_dir: work_dir.clone(),
+            global_mode: true,
+            ..Default::default()
+        };
+
+        build_claude(&scope, &runtime_dir, &[]).unwrap();
+
+        let work_claude = work_dir.join(".claude");
+        assert!(
+            work_claude.is_symlink(),
+            "orbit-managed symlink is replaced"
+        );
+        assert_eq!(
+            fs::read_link(&work_claude).unwrap(),
+            runtime_dir.join(".claude")
+        );
     }
 }
